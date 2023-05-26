@@ -1,0 +1,75 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+    instance: webapp
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nginx
+      instance: webapp
+  template:
+    metadata:
+      labels:
+        app: nginx
+        instance: webapp
+    spec:
+      containers:
+      - name: nginx
+        image: "bitnami/nginx:1.18.0"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+        ports:
+        - name: http
+          containerPort: 8080
+        - name: https
+          containerPort: 8443
+        volumeMounts:
+        - name: cert
+          mountPath: /certs/tls.crt
+          subPath: tls.crt
+        - name: key
+          mountPath: /certs/tls.key
+          subPath: tls.key
+        - name: cacert
+          mountPath: /certs/ca.crt
+          subPath: ca.crt
+        - name: nginx-conf
+          mountPath: /opt/bitnami/nginx/conf/nginx.conf
+          subPath: nginx.conf
+      volumes:
+      - name: cert
+        secret:
+          secretName: tls-cert
+          items:
+          - key: tls.crt
+            path: tls.crt
+      - name: key
+        secret:
+          secretName: tls-cert
+          items:
+          - key: tls.key
+            path: tls.key
+      - name: cacert
+        secret:
+          secretName: tls-cert
+          items:
+          - key: ca.crt
+            path: ca.crt
+      - name: nginx-conf
+        configMap:
+          name: nginx-conf
+          items:
+          - key: nginx.conf
+            path: nginx.conf
+---
+

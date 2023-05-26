@@ -1,0 +1,991 @@
+Deploy Voting App on GKE
+
+######################### APP DESCRIPTION ##########################
+Disclaimer: The app is not developed by me. It has been taken from 
+publicly available github repositories and used by me as a reference
+Ref: https://github.com/dockersamples/example-voting-app.git
+#####################################################################
+
+I have created one GKE cluster (3 nodes) and deployed a voting application taken as a reference to complete assigned tasks. 
+
+This is a simple multi tiered voting application that uses different coding languages like Python, .Net and Node JS. The application has following components (built in separate docker containers).
+
+A front-end web-app written in Python that let’s you vote between 2 options (Cats / Dogs)
+A Redis in-memory caching layer that collects and queues the vote
+A Worker application written in .Net that consumes the votes and persist them on database
+A Postgres database backed by docker volume
+A Node JS web-app polling the database and showing the votes in real-time
+
+The end user access the voting web application (written in python) to cast vote(s). The application writes to an in-memory cache engine, built by Redis container, which is then read by a worker application (.Net) and persisted on the Postgres database. Another web application, result app (written in Node JS), exposes the data from Postgres database to the end user. 
+
+################################################################################################################
+################################################## STEPS #######################################################
+################################################################################################################
+
+1. Create a namespace named "services"
+
+kubectl create ns services 
+
+2. Deploy postgres in services namespace using helm 
+
+helm repo add bitnami https://charts.bitnami.com/bitnami
+
+helm search repo postgres
+NAME                    CHART VERSION   APP VERSION     DESCRIPTION                                       
+bitnami/postgresql      12.5.5          15.3.0          PostgreSQL (Postgres) is an open source object-...
+bitnami/postgresql-ha   11.7.2          15.3.0          This PostgreSQL cluster solution includes the P...
+bitnami/supabase        0.3.5           0.23.4          Supabase is an open source Firebase alternative...
+
+
+helm fetch bitnami/postgresql --version=12.5.5
+
+ls -l
+total 56
+-rw-r--r-- 1 sonut sonut 56333 May 25 15:50 postgresql-12.5.5.tgz
+
+
+helm upgrade --install postgres --namespace services --set auth.postgresPassword=postgres ./postgresql-12.5.5.tgz 
+Release "postgres" does not exist. Installing it now.
+NAME: postgres
+LAST DEPLOYED: Thu May 25 15:58:20 2023
+NAMESPACE: services
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+CHART NAME: postgresql
+CHART VERSION: 12.5.5
+APP VERSION: 15.3.0
+
+
+helm list -n services 
+NAME            NAMESPACE       REVISION        UPDATED                                 STATUS          CHART                   APP VERSION
+postgres        services        1               2023-05-25 15:58:20.46287752 +0000 UTC  deployed        postgresql-12.5.5       15.3.0   
+
+
+kubectl get pvc -n services 
+NAME                         STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+data-postgres-postgresql-0   Bound    pvc-010aa3f7-f27f-44b2-9e1d-d71cebdb6139   8Gi        RWO            standard-rwo   46s
+
+kubectl get svc -n services 
+NAME                     TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE
+postgres-postgresql      ClusterIP   10.8.1.158   <none>        5432/TCP   63s
+postgres-postgresql-hl   ClusterIP   None         <none>        5432/TCP   63s
+
+kubectl get pod -n services 
+NAME                    READY   STATUS    RESTARTS   AGE
+postgres-postgresql-0   1/1     Running   0          72s
+
+
+kubectl get svc -n services postgres-postgresql -oyaml > db.svc.yaml
+
+cat db.svc.yaml 
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: primary
+    app.kubernetes.io/instance: postgres
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-12.5.5
+  name: db 
+  namespace: services
+spec:
+  ports:
+  - name: tcp-postgresql
+    port: 5432
+    protocol: TCP
+    targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/component: primary
+    app.kubernetes.io/instance: postgres
+    app.kubernetes.io/name: postgresql
+  sessionAffinity: None
+  type: ClusterIP
+
+kubectl create -f db.svc.yaml -n services
+
+kubectl -n services exec -it postgres-postgresql-0 -- bash
+
+I have no name!@postgres-postgresql-0:/$ psql -h db -U postgres -W -d postgres
+Password: 
+psql (15.3)
+Type "help" for help.
+
+postgres=# \l
+                                                 List of databases
+   Name    |  Owner   | Encoding |   Collate   |    Ctype    | ICU Locale | Locale Provider |   Access privileges   
+-----------+----------+----------+-------------+-------------+------------+-----------------+-----------------------
+ postgres  | postgres | UTF8     | en_US.UTF-8 | en_US.UTF-8 |            | libc            | 
+ template0 | postgres | UTF8     | en_US.UTF-8 | en_US.UTF-8 |            | libc            | =c/postgres          +
+           |          |          |             |             |            |                 | postgres=CTc/postgres
+ template1 | postgres | UTF8     | en_US.UTF-8 | en_US.UTF-8 |            | libc            | =c/postgres          +
+           |          |          |             |             |            |                 | postgres=CTc/postgres
+(3 rows)
+
+postgres=# \q
+
+
+3. Deploy redis in services namespace using help 
+
+helm search repo redis 
+NAME                    CHART VERSION   APP VERSION     DESCRIPTION                                       
+bitnami/redis           17.11.3         7.0.11          Redis(R) is an open source, advanced key-value ...
+bitnami/redis-cluster   8.6.2           7.0.11          Redis(R) is an open source, scalable, distribut...
+
+helm fetch bitnami/redis --version=17.11.3
+
+ls -l 
+total 152
+-rw-r--r-- 1 sonut sonut   559 May 25 16:03 db.svc.yaml
+-rw-r--r-- 1 sonut sonut 56333 May 25 15:50 postgresql-12.5.5.tgz
+-rw-r--r-- 1 sonut sonut 91655 May 25 16:06 redis-17.11.3.tgz
+
+
+helm upgrade --install redis --namespace services --set architecture=standalone --set auth.enabled=false ./redis-17.11.3.tgz 
+Release "redis" does not exist. Installing it now.
+NAME: redis
+LAST DEPLOYED: Thu May 25 16:09:42 2023
+NAMESPACE: services
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+CHART NAME: redis
+CHART VERSION: 17.11.3
+APP VERSION: 7.0.11
+
+
+helm list -n services 
+NAME            NAMESPACE       REVISION        UPDATED                                 STATUS          CHART                   APP VERSION
+postgres        services        1               2023-05-25 15:58:20.46287752 +0000 UTC  deployed        postgresql-12.5.5       15.3.0     
+redis           services        1               2023-05-25 16:09:42.344909363 +0000 UTC deployed        redis-17.11.3           7.0.11    
+
+kubectl get pvc -n services 
+NAME                         STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+data-postgres-postgresql-0   Bound    pvc-010aa3f7-f27f-44b2-9e1d-d71cebdb6139   8Gi        RWO            standard-rwo   11m
+redis-data-redis-master-0    Bound    pvc-5265e7bf-8304-4a56-bc83-7cdb5485a592   8Gi        RWO            standard-rwo   36s
+
+
+kubectl get pod -n services 
+NAME                    READY   STATUS    RESTARTS   AGE
+postgres-postgresql-0   1/1     Running   0          12m
+redis-master-0          1/1     Running   0          52s
+
+kubectl get svc -n services 
+NAME                     TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)    AGE
+db                       ClusterIP   10.8.15.42    <none>        5432/TCP   7m6s
+postgres-postgresql      ClusterIP   10.8.1.158    <none>        5432/TCP   12m
+postgres-postgresql-hl   ClusterIP   None          <none>        5432/TCP   12m
+redis-headless           ClusterIP   None          <none>        6379/TCP   67s
+redis-master             ClusterIP   10.8.12.208   <none>        6379/TCP   67s
+
+###### Adding label cache for one of the nodes where redis will be deployed #######
+
+kubectl get nodes
+NAME                                       STATUS   ROLES    AGE   VERSION
+gke-cluster-1-default-pool-043d1b55-1qbw   Ready    <none>   24h   v1.25.8-gke.500
+gke-cluster-1-default-pool-043d1b55-m6n3   Ready    <none>   24h   v1.25.8-gke.500
+gke-cluster-1-default-pool-043d1b55-rtz4   Ready    <none>   24h   v1.25.8-gke.500
+
+kubectl label nodes gke-cluster-1-default-pool-043d1b55-rtz4 cache=true
+node/gke-cluster-1-default-pool-043d1b55-rtz4 labeled
+sonu11_tiwary@cloudshell:~/data/apps (composite-depot-387716)$ kubectl get nodes --show-labels | grep -i cache
+
+cat redis-svc.yaml 
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: master
+    app.kubernetes.io/instance: redis
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.11.3
+  name: redis
+  namespace: services
+spec:
+  ports:
+  - name: tcp-redis
+    port: 6379
+    protocol: TCP
+    targetPort: redis
+  selector:
+    app.kubernetes.io/component: master
+    app.kubernetes.io/instance: redis
+    app.kubernetes.io/name: redis
+  sessionAffinity: None
+  type: ClusterIP
+
+kubectl create -f redis-svc.yaml
+
+kubectl -n services exec -it redis-master-0 -- bash
+
+I have no name!@redis-master-0:/$ redis-cli -h redis -p 6379 ping 
+PONG
+
+4. Deploy vote application 
+
+cat vote-deployment.yaml 
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: vote
+  name: vote
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vote
+  template:
+    metadata:
+      labels:
+        app: vote
+    spec:
+      containers:
+      - image: dockersamples/examplevotingapp_vote
+        name: vote
+        ports:
+        - containerPort: 80
+          name: vote
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: vote
+  name: vote
+spec:
+  type: LoadBalancer 
+  ports:
+  - name: "vote-service"
+    port: 5000
+    targetPort: 80
+    nodePort: 31000
+  selector:
+    app: vote
+
+
+kubectl create -f vote-deployment.yaml -n services
+
+kubectl get pod -n services 
+NAME                    READY   STATUS    RESTARTS   AGE
+postgres-postgresql-0   1/1     Running   0          29m
+redis-master-0          1/1     Running   0          17m
+vote-97d848469-j7rls    1/1     Running   0          73s
+
+
+
+5. Deploy result application 
+
+cat result-deployment.yaml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: result
+  name: result
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: result
+  template:
+    metadata:
+      labels:
+        app: result
+    spec:
+      containers:
+      - image: dockersamples/examplevotingapp_result
+        name: result
+        ports:
+        - containerPort: 80
+          name: result
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: result
+  name: result
+spec:
+  type: LoadBalancer 
+  ports:
+  - name: "result-service"
+    port: 5001
+    targetPort: 80
+  selector:
+    app: result
+
+kubectl create -f result-deployment.yaml -n services
+
+kubectl get pod -n services 
+NAME                      READY   STATUS    RESTARTS   AGE
+postgres-postgresql-0     1/1     Running   0          32m
+redis-master-0            1/1     Running   0          21m
+result-5c4b4bf59c-vmkvn   1/1     Running   0          17s
+vote-97d848469-j7rls      1/1     Running   0          4m32s
+
+6. Deploy worker application 
+
+cat worker-deployment.yaml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: worker
+  name: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+      - image: dockersamples/examplevotingapp_worker
+        name: worker
+
+
+kubectl create -f worker-deployment.yaml -n services
+
+
+kubectl get pod -n services 
+NAME                      READY   STATUS    RESTARTS   AGE
+postgres-postgresql-0     1/1     Running   0          33m
+redis-master-0            1/1     Running   0          22m
+result-5c4b4bf59c-vmkvn   1/1     Running   0          113s
+vote-97d848469-j7rls      1/1     Running   0          6m8s
+worker-549b9c46d8-s5fsv   1/1     Running   0          12s
+
+kubectl get svc -n services 
+NAME                     TYPE           CLUSTER-IP    EXTERNAL-IP      PORT(S)          AGE
+db                       ClusterIP      10.8.15.42    <none>           5432/TCP         29m
+postgres-postgresql      ClusterIP      10.8.1.158    <none>           5432/TCP         34m
+postgres-postgresql-hl   ClusterIP      None          <none>           5432/TCP         34m
+redis                    ClusterIP      10.8.14.77    <none>           6379/TCP         20m
+redis-headless           ClusterIP      None          <none>           6379/TCP         23m
+redis-master             ClusterIP      10.8.12.208   <none>           6379/TCP         23m
+result                   LoadBalancer   10.8.6.109    35.192.205.131   5001:32548/TCP   2m43s
+vote                     LoadBalancer   10.8.13.180   34.29.58.250     5000:31000/TCP   6m57s
+
+############## Deploying nginx ##############
+
+Certificates------------------
+mkdir cert
+  144  cd cert
+  145  mkdir -p Internal_Root_CA
+  146  cd Internal_Root_CA
+  147  echo "My_Secret_Password" > my_root_keypass.enc
+  148  openssl genrsa -des3 -passout file:my_root_keypass.enc -out ca.key 4096
+  149  ls -l 
+  150  openssl req -new -x509 -days 3650 -key rootCAKey.pem -out rootCA.pem -passin file:my_root_keypass.enc
+  151  ls -l 
+  152  openssl req -new -x509 -days 3650 -key ca.key -out rootCA.pem -passin file:my_root_keypass.enc
+  153  ls
+  154  openssl x509 -noout -text -in rootCA.pem
+  155  cd ..
+  156  openssl genrsa -out vault.key 4096
+  157  openssl genrsa -out server.key 4096
+  158  rm -rf vault.key 
+  159  vim server_cert.cnf
+  160  openssl req -new -key server.key -out server.csr -config server_cert.cnf
+  161  ls
+  162  vim server_cert.cnf
+  163  openssl req -new -key server.key -out server.csr -config server_cert.cnf
+  164  ls
+  165  openssl req -noout -text -in server.csr
+  166  openssl x509 -req -days 365 -in server.csr -CA Internal_Root_CA/rootCA.pem -CAkey Internal_Root_CA/ca.key -CAcreateserial -out server.crt -passin file:Internal_Root_CA/my_root_keypass.enc -extensions req_ext -extfile server_cert.cnf 
+  167  ls -l
+  168  openssl x509 -noout -text -in server.crt 
+  169  ls
+  170  kubectl create secret generic tls-cert --from-file=tls.crt=server.crt --from-file=tls.key=./server.key --from-file=ca.crt=Internal_Root_CA/rootCA.pem -n services
+
+cat nginx-cm.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-conf
+data:
+  nginx.conf: |
+    # Based on https://www.nginx.com/resources/wiki/start/topics/examples/full/#nginx-conf
+    # user              www www;  ## Default: nobody
+    
+    worker_processes  auto;
+    error_log         "/opt/bitnami/nginx/logs/error.log";
+    pid               "/opt/bitnami/nginx/tmp/nginx.pid";
+    
+    events {
+        worker_connections  1024;
+    }
+    http {
+        include       mime.types;
+        default_type  application/octet-stream;
+        log_format    main '$remote_addr - $remote_user [$time_local] '
+                           '"$request" $status  $body_bytes_sent "$http_referer" '
+                           '"$http_user_agent" "$http_x_forwarded_for"';
+        access_log    "/opt/bitnami/nginx/logs/access.log";
+        add_header    X-Frame-Options SAMEORIGIN;
+
+        client_body_temp_path  "/opt/bitnami/nginx/tmp/client_body" 1 2;
+        proxy_temp_path        "/opt/bitnami/nginx/tmp/proxy" 1 2;
+        fastcgi_temp_path      "/opt/bitnami/nginx/tmp/fastcgi" 1 2;
+        scgi_temp_path         "/opt/bitnami/nginx/tmp/scgi" 1 2;
+        uwsgi_temp_path        "/opt/bitnami/nginx/tmp/uwsgi" 1 2;
+
+        sendfile           on;
+        tcp_nopush         on;
+        tcp_nodelay        off;
+        gzip               on;
+        gzip_http_version  1.0;
+        gzip_comp_level    2;
+        gzip_proxied       any;
+        gzip_types         text/plain text/css application/javascript text/xml application/xml+rss;
+        keepalive_timeout  65;
+        ssl_protocols      TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
+        ssl_ciphers        HIGH:!aNULL:!MD5;
+        client_max_body_size 80M;
+        server_tokens off;
+
+        include  "/opt/bitnami/nginx/conf/server_blocks/*.conf";
+
+        # HTTP Server
+        server {
+            root /app;
+            # Port to listen on, can also be set in IP:PORT format
+            listen  8080;
+            server_name webapp.example.lan;
+            return 301 https://$host$request_uri;
+
+            include  "/opt/bitnami/nginx/conf/bitnami/*.conf";
+
+
+            location /status {
+                stub_status on;
+                access_log   off;
+                allow all;
+            }
+
+            location /vote {
+                #proxy_set_header X-Forwarded-For $proxy_add_forwarded_for;
+                proxy_set_header Host $host;
+                proxy_pass http://vote:5000/;
+                proxy_redirect off;
+                access_log "/opt/bitnami/nginx/logs/access.log";
+                error_log  "/opt/bitnami/nginx/logs/error.log" warn;
+              }
+              location /result {
+                #proxy_set_header X-Forwarded-For $proxy_add_forwarded_for;
+                proxy_set_header Host $host;
+                proxy_pass http://result:5001/;
+                proxy_redirect off;
+                access_log "/opt/bitnami/nginx/logs/access.log";
+                error_log  "/opt/bitnami/nginx/logs/error.log" warn;
+              }
+      }
+      # HTTPS Server
+       server {
+           # Port to listen on, can also be set in IP:PORT format
+           listen  8443 ssl http2;
+           server_name webapp.example.lan;
+           ssl_certificate "/opt/bitnami/nginx/conf/bitnami/certs/tls.crt";
+           ssl_certificate_key "/opt/bitnami/nginx/conf/bitnami/certs/tls.key";
+           ssl_trusted_certificate "/opt/bitnami/nginx/conf/bitnami/certs/ca.crt";
+
+            location /status {
+                stub_status on;
+                access_log   off;
+                allow all;
+            }
+
+           location /vote {
+                #proxy_set_header X-Forwarded-For $proxy_add_forwarded_for;
+                proxy_set_header Host $host;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_pass http://vote:5000/;
+                proxy_redirect off;
+                access_log "/opt/bitnami/nginx/logs/access.log";
+                error_log  "/opt/bitnami/nginx/logs/error.log" warn;
+           }
+           location /result {
+                #proxy_set_header X-Forwarded-For $proxy_add_forwarded_for;
+                proxy_set_header Host $host;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                #proxy_set_header $http_x_forwarded_proto $scheme;
+                proxy_pass http://result:5001/;
+                proxy_redirect off;
+                access_log "/opt/bitnami/nginx/logs/access.log";
+                error_log  "/opt/bitnami/nginx/logs/error.log" warn;
+           }
+         }
+    }
+---
+
+cat nginx-dp.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+    instance: webapp
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nginx
+      instance: webapp
+  template:
+    metadata:
+      labels:
+        app: nginx
+        instance: webapp
+    spec:
+      containers:
+      - name: nginx
+        image: "bitnami/nginx:1.18.0"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+        ports:
+        - name: http
+          containerPort: 8080
+        - name: https
+          containerPort: 8443
+        volumeMounts:
+        - name: cert
+          mountPath: /certs/tls.crt
+          subPath: tls.crt
+        - name: key
+          mountPath: /certs/tls.key
+          subPath: tls.key
+        - name: cacert
+          mountPath: /certs/ca.crt
+          subPath: ca.crt
+        - name: nginx-conf
+          mountPath: /opt/bitnami/nginx/conf/nginx.conf
+          subPath: nginx.conf
+      volumes:
+      - name: cert
+        secret:
+          secretName: tls-cert
+          items:
+          - key: tls.crt
+            path: tls.crt
+      - name: key
+        secret:
+          secretName: tls-cert
+          items:
+          - key: tls.key
+            path: tls.key
+      - name: cacert
+        secret:
+          secretName: tls-cert
+          items:
+          - key: ca.crt
+            path: ca.crt
+      - name: nginx-conf
+        configMap:
+          name: nginx-conf
+          items:
+          - key: nginx.conf
+            path: nginx.conf
+---
+
+cat nginx-svc.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+    instance: webapp
+spec:
+  type: LoadBalancer
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: https
+    port: 443
+    targetPort: 8443
+  selector:
+    app: nginx
+    instance: webapp
+---
+
+kubectl create -f nginx-cm.yaml
+kubectl create -f nginx-dp.yaml
+kubectl create -f nginx-svc.yaml
+
+kubectl get pods -n services
+NAME                      READY   STATUS    RESTARTS   AGE
+nginx-696cf6d8c7-4svqq    1/1     Running   0          12h
+postgres-postgresql-0     1/1     Running   0          35h
+redis-master-0            1/1     Running   0          35h
+result-5c699fd4c6-cfbqg   1/1     Running   0          10h
+vote-7995c55cbf-w26nm     1/1     Running   0          10h
+worker-b7d99f466-2jmgx    1/1     Running   0          10h
+
+kubectl get svc -n services
+NAME                     TYPE           CLUSTER-IP     EXTERNAL-IP     PORT(S)                      AGE
+db                       ClusterIP      10.8.153.46    <none>          5432/TCP                     35h
+nginx                    LoadBalancer   10.8.158.31    35.194.42.130   80:30186/TCP,443:32120/TCP   13h
+postgres-postgresql      ClusterIP      10.8.145.146   <none>          5432/TCP                     35h
+postgres-postgresql-hl   ClusterIP      None           <none>          5432/TCP                     35h
+redis                    ClusterIP      10.8.148.53    <none>          6379/TCP                     35h
+redis-headless           ClusterIP      None           <none>          6379/TCP                     36h
+redis-master             ClusterIP      10.8.147.216   <none>          6379/TCP                     36h
+result                   LoadBalancer   10.8.150.92    34.132.57.193   5001:32126/TCP               10h
+vote                     LoadBalancer   10.8.153.220   34.31.132.116   5000:31803/TCP               10h
+
+##############################################################
+##################### HPA - AutoScaling ######################
+##############################################################
+
+cat hpa.yaml 
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: redis-hpa
+  namespace: services
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: redis-master
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 60
+
+cat web-hpa.yaml 
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nginx-hpa
+  namespace: services
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nginx
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 60
+
+kubectl get hpa -n services
+NAME        REFERENCE                  TARGETS                        MINPODS   MAXPODS   REPLICAS   AGE
+nginx-hpa   Deployment/nginx           0%/60%, 0%/60%                 1         3         1          4m10s
+redis-hpa   StatefulSet/redis-master   <unknown>/60%, <unknown>/60%   1         3         1          6m27s
+
+##############################################################
+##################### Helm CHARTS ############################
+##############################################################
+
+helm create webapp
+cd webapp
+cd templates
+
+ls -ltrh
+total 32K
+-rw-r--r-- 1 sonu11_tiwary sonu11_tiwary 1.8K May 25 18:00 _helpers.tpl
+-rw-r--r-- 1 sonu11_tiwary sonu11_tiwary  382 May 25 18:37 result-service.yaml
+-rw-r--r-- 1 sonu11_tiwary sonu11_tiwary  368 May 25 18:37 vote-service.yaml
+-rw-r--r-- 1 sonu11_tiwary sonu11_tiwary  664 May 25 18:45 result-deployment.yaml
+-rw-r--r-- 1 sonu11_tiwary sonu11_tiwary  640 May 25 18:45 vote-deployment.yaml
+-rw-r--r-- 1 sonu11_tiwary sonu11_tiwary  598 May 25 18:47 worker-deployment.yaml
+-rw-r--r-- 1 sonu11_tiwary sonu11_tiwary  652 May 25 18:57 hpa.yaml
+-rw-r--r-- 1 sonu11_tiwary sonu11_tiwary  649 May 25 18:59 web-hpa.yaml
+
+cat vote-deployment.yaml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: {{ .Values.vote.applabel }}
+    instance: {{ .Values.vote.instancelabel }}
+  name: vote
+spec:
+  replicas: {{ .Values.vote.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.vote.applabel }}
+      instance: {{ .Values.vote.instancelabel }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.vote.applabel }}
+        instance: {{ .Values.vote.instancelabel }}
+    spec:
+      containers:
+      - image: "{{ .Values.vote.image.name }}:{{ .Values.vote.image.tag }}"
+        name: vote
+        ports:
+        - containerPort: 80
+          name: vote
+
+cat vote-service.yaml 
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: {{ .Values.vote.applabel }}
+    instance: {{ .Values.vote.instancelabel }}    
+  name: vote
+spec:
+  type: {{ .Values.vote.service.type }}
+  ports:
+  - name: "vote-service"
+    port: 5000
+    targetPort: 80
+  selector:
+    app: {{ .Values.vote.applabel }}
+    instance: {{ .Values.vote.instancelabel }}
+
+cat result-deployment.yaml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: {{ .Values.result.applabel }}
+    instance: {{ .Values.result.instancelabel }}
+  name: result
+spec:
+  replicas: {{ .Values.result.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.result.applabel }}
+      instance: {{ .Values.result.instancelabel }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.result.applabel }}
+        instance: {{ .Values.result.instancelabel }}
+    spec:
+      containers:
+      - name: result
+        image: "{{ .Values.result.image.name }}:{{ .Values.result.image.tag }}"
+        ports:
+        - containerPort: 80
+          name: result
+
+cat result-service.yaml 
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: {{ .Values.result.applabel }}
+    instance: {{ .Values.result.instancelabel }}    
+  name: result
+spec:
+  type: {{ .Values.result.service.type }}
+  ports:
+  - name: "result-service"
+    port: 5001
+    targetPort: 80
+  selector:
+    app: {{ .Values.result.applabel }}
+    instance: {{ .Values.result.instancelabel }}
+
+cat worker-deployment.yaml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: {{ .Values.worker.applabel }}
+    instance: {{ .Values.worker.instancelabel }}
+  name: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.worker.applabel }}
+      instance: {{ .Values.worker.instancelabel }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.worker.applabel }}
+        instance: {{ .Values.worker.instancelabel }}
+    spec:
+      containers:
+      - image: "{{ .Values.worker.image.name }}:{{ .Values.worker.image.tag }}"
+        name: worker
+
+cat hpa.yaml 
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: redis-hpa
+  namespace: services
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: redis-master
+  minReplicas: {{ .Values.hpa.redis.minReplicas }}
+  maxReplicas: {{ .Values.hpa.redis.maxReplicas }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.hpa.redis.cpu.averageUtilization }}
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.hpa.redis.memory.averageUtilization }}
+
+cat web-hpa.yaml 
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: webapp-hpa
+  namespace: services
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nginx
+  minReplicas: {{ .Values.hpa.webapp.minReplicas }}
+  maxReplicas: {{ .Values.hpa.webapp.maxReplicas }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.hpa.webapp.cpu.averageUtilization }}
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.hpa.webapp.memory.averageUtilization }}
+
+cat values.yaml 
+# Default values for webapp.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+vote:
+  replicaCount: 1
+  applabel: vote
+  instancelabel: vote
+  image:
+    name: dockersamples/examplevotingapp_vote
+    tag: latest
+  service:
+    type: LoadBalancer
+
+result:
+  replicaCount: 1
+  applabel: result
+  instancelabel: result
+  image:
+    name: dockersamples/examplevotingapp_result
+    tag: latest
+  service:
+    type: LoadBalancer
+
+worker:
+  replicaCount: 1
+  applabel: worker
+  instancelabel: worker
+  image:
+    name: dockersamples/examplevotingapp_worker
+    tag: latest
+
+hpa:
+  redis:
+    minReplicas: 1
+    maxReplicas: 3
+    cpu:
+      averageUtilization: 60
+    memory:
+      averageUtilization: 60
+  webapp:
+    minReplicas: 1
+    maxReplicas: 3
+    cpu:
+      averageUtilization: 60
+    memory:
+      averageUtilization: 60
+
+helm upgrade --install webapp --namespace services .
+helm list -n services
+NAME            NAMESPACE       REVISION        UPDATED                                 STATUS          CHART                   APP VERSION
+postgres        services        1               2023-05-24 18:32:06.552748463 +0000 UTC deployed        postgresql-12.5.5       15.3.0     
+redis           services        2               2023-05-24 18:19:50.181893438 +0000 UTC deployed        redis-17.11.3           7.0.11     
+webapp          services        1               2023-05-25 19:03:15.067212295 +0000 UTC deployed        webapp-0.1.0            1.16.0
+
+kubectl get pods -n services
+kubectl get svc -n services
+
+######################## Accessing the app ##########################
+
+kubectl get svc -n services
+NAME                     TYPE           CLUSTER-IP     EXTERNAL-IP     PORT(S)                      AGE
+db                       ClusterIP      10.8.153.46    <none>          5432/TCP                     35h
+nginx                    LoadBalancer   10.8.158.31    35.194.42.130   80:30186/TCP,443:32120/TCP   13h
+postgres-postgresql      ClusterIP      10.8.145.146   <none>          5432/TCP                     35h
+postgres-postgresql-hl   ClusterIP      None           <none>          5432/TCP                     35h
+redis                    ClusterIP      10.8.148.53    <none>          6379/TCP                     35h
+redis-headless           ClusterIP      None           <none>          6379/TCP                     36h
+redis-master             ClusterIP      10.8.147.216   <none>          6379/TCP                     36h
+result                   LoadBalancer   10.8.150.92    34.132.57.193   5001:32126/TCP               10h
+vote                     LoadBalancer   10.8.153.220   34.31.132.116   5000:31803/TCP               10h
+
+
+Voting app: http://34.31.132.116:5000
+Rsult app: http://34.132.57.193:5001
+
+Using Nginx: 
+Voting app: https://35.194.42.130/vote
+Result app: https://35.194.42.130/result
+
+

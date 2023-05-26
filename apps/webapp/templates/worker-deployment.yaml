@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: {{ .Values.worker.applabel }}
+    instance: {{ .Values.worker.instancelabel }}
+  name: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.worker.applabel }}
+      instance: {{ .Values.worker.instancelabel }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.worker.applabel }}
+        instance: {{ .Values.worker.instancelabel }}
+    spec:
+      containers:
+      - image: "{{ .Values.worker.image.name }}:{{ .Values.worker.image.tag }}"
+        name: worker
