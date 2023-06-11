@@ -143,8 +143,20 @@ total 152
 -rw-r--r-- 1 sonut sonut 56333 May 25 15:50 postgresql-12.5.5.tgz
 -rw-r--r-- 1 sonut sonut 91655 May 25 16:06 redis-17.11.3.tgz
 
+###### Adding label cache for one of the nodes where redis will be deployed #######
 
-helm upgrade --install redis --namespace services --set architecture=standalone --set auth.enabled=false ./redis-17.11.3.tgz 
+kubectl get nodes
+NAME                                       STATUS   ROLES    AGE   VERSION
+gke-cluster-1-default-pool-043d1b55-1qbw   Ready    <none>   24h   v1.25.8-gke.500
+gke-cluster-1-default-pool-043d1b55-m6n3   Ready    <none>   24h   v1.25.8-gke.500
+gke-cluster-1-default-pool-043d1b55-rtz4   Ready    <none>   24h   v1.25.8-gke.500
+
+kubectl label nodes gke-cluster-1-default-pool-043d1b55-rtz4 cache=true
+node/gke-cluster-1-default-pool-043d1b55-rtz4 labeled
+sonu11_tiwary@cloudshell:~/data/apps (composite-depot-387716)$ kubectl get nodes --show-labels | grep -i cache
+
+
+helm upgrade --install redis --namespace services --set architecture=standalone --set auth.enabled=false -f redis-values.yaml ./redis-17.11.3.tgz 
 Release "redis" does not exist. Installing it now.
 NAME: redis
 LAST DEPLOYED: Thu May 25 16:09:42 2023
@@ -181,18 +193,6 @@ postgres-postgresql      ClusterIP   10.8.1.158    <none>        5432/TCP   12m
 postgres-postgresql-hl   ClusterIP   None          <none>        5432/TCP   12m
 redis-headless           ClusterIP   None          <none>        6379/TCP   67s
 redis-master             ClusterIP   10.8.12.208   <none>        6379/TCP   67s
-
-###### Adding label cache for one of the nodes where redis will be deployed #######
-
-kubectl get nodes
-NAME                                       STATUS   ROLES    AGE   VERSION
-gke-cluster-1-default-pool-043d1b55-1qbw   Ready    <none>   24h   v1.25.8-gke.500
-gke-cluster-1-default-pool-043d1b55-m6n3   Ready    <none>   24h   v1.25.8-gke.500
-gke-cluster-1-default-pool-043d1b55-rtz4   Ready    <none>   24h   v1.25.8-gke.500
-
-kubectl label nodes gke-cluster-1-default-pool-043d1b55-rtz4 cache=true
-node/gke-cluster-1-default-pool-043d1b55-rtz4 labeled
-sonu11_tiwary@cloudshell:~/data/apps (composite-depot-387716)$ kubectl get nodes --show-labels | grep -i cache
 
 cat redis-svc.yaml 
 
@@ -427,7 +427,9 @@ data:
     events {
         worker_connections  1024;
     }
+
     http {
+
         include       mime.types;
         default_type  application/octet-stream;
         log_format    main '$remote_addr - $remote_user [$time_local] '
@@ -460,75 +462,77 @@ data:
 
         # HTTP Server
         server {
-            root /app;
             # Port to listen on, can also be set in IP:PORT format
             listen  8080;
-            server_name webapp.example.lan;
+            server_name webapp.example.com;
             return 301 https://$host$request_uri;
 
             include  "/opt/bitnami/nginx/conf/bitnami/*.conf";
 
-
             location /status {
                 stub_status on;
                 access_log   off;
                 allow all;
             }
 
-            location /vote {
-                #proxy_set_header X-Forwarded-For $proxy_add_forwarded_for;
-                proxy_set_header Host $host;
-                proxy_pass http://vote:5000/;
-                proxy_redirect off;
-                access_log "/opt/bitnami/nginx/logs/access.log";
-                error_log  "/opt/bitnami/nginx/logs/error.log" warn;
-              }
-              location /result {
-                #proxy_set_header X-Forwarded-For $proxy_add_forwarded_for;
-                proxy_set_header Host $host;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            location /result/ {
                 proxy_pass http://result:5001/;
                 proxy_redirect off;
                 access_log "/opt/bitnami/nginx/logs/access.log";
                 error_log  "/opt/bitnami/nginx/logs/error.log" warn;
               }
-      }
-      # HTTPS Server
+
+            location / {
+                  if ($http_referer ~* (/result) ) {
+                        proxy_pass http://result:5001;
+                        break;
+                  }
+                  proxy_pass http://vote:5000;
+          }
+        }
+
+       # HTTPS Server
        server {
            # Port to listen on, can also be set in IP:PORT format
            listen  8443 ssl http2;
-           server_name webapp.example.lan;
+           server_name webapp.example.com;
            ssl_certificate "/opt/bitnami/nginx/conf/bitnami/certs/tls.crt";
            ssl_certificate_key "/opt/bitnami/nginx/conf/bitnami/certs/tls.key";
            ssl_trusted_certificate "/opt/bitnami/nginx/conf/bitnami/certs/ca.crt";
 
-            location /status {
-                stub_status on;
-                access_log   off;
-                allow all;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+
+           location /status {
+             stub_status on;
+             access_log   off;
+             allow all;
             }
 
-           location /vote {
-                #proxy_set_header X-Forwarded-For $proxy_add_forwarded_for;
-                proxy_set_header Host $host;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto https;
-                proxy_pass http://vote:5000/;
-                proxy_redirect off;
-                access_log "/opt/bitnami/nginx/logs/access.log";
-                error_log  "/opt/bitnami/nginx/logs/error.log" warn;
+           location /result/ {
+               proxy_pass http://result:5001/;
+               proxy_redirect off;
+               access_log "/opt/bitnami/nginx/logs/access.log";
+              error_log  "/opt/bitnami/nginx/logs/error.log" warn;
            }
-           location /result {
-                #proxy_set_header X-Forwarded-For $proxy_add_forwarded_for;
-                proxy_set_header Host $host;
-                proxy_set_header X-Forwarded-Proto https;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                #proxy_set_header $http_x_forwarded_proto $scheme;
-                proxy_pass http://result:5001/;
-                proxy_redirect off;
-                access_log "/opt/bitnami/nginx/logs/access.log";
-                error_log  "/opt/bitnami/nginx/logs/error.log" warn;
-           }
+
+           location / {
+              if ($http_referer ~* (/result) ) {
+                  proxy_pass http://result:5001;
+                  break;
+                }
+              proxy_pass http://vote:5000;
+              }
+
          }
+
     }
 ---
 
@@ -631,6 +635,7 @@ spec:
     instance: webapp
 ---
 
+kubectl create secret generic tls-cert --from-file=tls.crt=server.crt --from-file=tls.key=server.key --from-file=ca.crt=Internal_Root_CA/rootCA.pem -n services
 kubectl create -f nginx-cm.yaml
 kubectl create -f nginx-dp.yaml
 kubectl create -f nginx-svc.yaml
