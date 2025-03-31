@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: myapp
-          image: myacrregistry.azurecr.io/myapp:dev
+          image: proj1registry.azurecr.io/myapp:dev
           ports:
             - containerPort: 80
 
